@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ICA Stores - Sweden</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+    <div id="map"></div>
+    <div class="controls">
+        <div class="toggle-group">
+            <button class="toggle-btn active" data-source="osm">OpenStreetMap</button>
+            <button class="toggle-btn" data-source="ica">ICA.se</button>
+        </div>
+        <div class="status" id="status">Click a source to load stores</div>
+        <div class="legend">
+            <div class="legend-item"><span class="legend-dot" style="background:#e74c3c"></span>Maxi</div>
+            <div class="legend-item"><span class="legend-dot" style="background:#3498db"></span>Kvantum</div>
+            <div class="legend-item"><span class="legend-dot" style="background:#27ae60"></span>Supermarket</div>
+            <div class="legend-item"><span class="legend-dot" style="background:#f39c12"></span>Nära</div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        const map = L.map('map').setView([62.5, 16], 5);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors',
+            maxZoom: 18
+        }).addTo(map);
+
+        const typeColors = {
+            'Maxi': '#e74c3c',
+            'Kvantum': '#3498db',
+            'Supermarket': '#27ae60',
+            'Nära': '#f39c12',
+            'ToGo': '#9b59b6',
+            'Other': '#95a5a6'
+        };
+
+        let markers = L.layerGroup().addTo(map);
+        let currentSource = null;
+        const cache = {};
+
+        function createMarker(store) {
+            const color = typeColors[store.type] || typeColors['Other'];
+            const icon = L.divIcon({
+                className: '',
+                html: `<div style="
+                    width:12px;height:12px;border-radius:50%;
+                    background:${color};border:2px solid white;
+                    box-shadow:0 1px 4px rgba(0,0,0,0.3);
+                "></div>`,
+                iconSize: [12, 12],
+                iconAnchor: [6, 6]
+            });
+
+            const parts = [`<strong>${store.name}</strong>`];
+            if (store.type) parts.push(`<em>${store.type}</em>`);
+            if (store.address) parts.push(store.address);
+            if (store.city) parts.push(store.city);
+
+            return L.marker([store.lat, store.lon], { icon })
+                .bindPopup(parts.join('<br>'));
+        }
+
+        function setStatus(text, cls) {
+            const el = document.getElementById('status');
+            el.textContent = text;
+            el.className = 'status' + (cls ? ' ' + cls : '');
+        }
+
+        async function loadSource(source) {
+            if (currentSource === source) return;
+            currentSource = source;
+
+            document.querySelectorAll('.toggle-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.source === source);
+            });
+
+            if (cache[source]) {
+                renderStores(cache[source]);
+                return;
+            }
+
+            setStatus('Loading stores...', 'loading');
+            markers.clearLayers();
+
+            try {
+                const resp = await fetch(`/api/stores/${source}`);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                cache[source] = data;
+                renderStores(data);
+            } catch (err) {
+                setStatus(`Error: ${err.message}`, 'error');
+            }
+        }
+
+        function renderStores(data) {
+            markers.clearLayers();
+            let mapped = 0;
+            for (const store of data.stores) {
+                if (store.lat && store.lon) {
+                    markers.addLayer(createMarker(store));
+                    mapped++;
+                }
+            }
+            setStatus(`${data.source}: ${mapped} stores on map (${data.count} total)`);
+        }
+
+        document.querySelectorAll('.toggle-btn').forEach(btn => {
+            btn.addEventListener('click', () => loadSource(btn.dataset.source));
+        });
+
+        loadSource('osm');
+    </script>
+</body>
+</html>
