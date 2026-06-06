@@ -117,6 +117,73 @@ async def get_ica_stores():
     return result
 
 
+import math
+
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371000
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def normalize_name(name: str) -> str:
+    return re.sub(r"[^a-zåäö0-9]", "", name.lower().replace("nära", "nara").replace("ica ", ""))
+
+
+@app.get("/api/stores/validate")
+async def validate_stores():
+    osm_data = await get_osm_stores()
+    ica_data = await get_ica_stores()
+
+    osm_stores = [s for s in osm_data["stores"] if s["lat"] and s["lon"]]
+    ica_stores = [s for s in ica_data["stores"] if s["lat"] and s["lon"]]
+
+    matched = []
+    ica_only = []
+    osm_matched_indices = set()
+
+    for ica_s in ica_stores:
+        best_match = None
+        best_dist = float("inf")
+        best_idx = -1
+
+        for idx, osm_s in enumerate(osm_stores):
+            if idx in osm_matched_indices:
+                continue
+            dist = haversine(ica_s["lat"], ica_s["lon"], osm_s["lat"], osm_s["lon"])
+            if dist < 500 and dist < best_dist:
+                name_sim = normalize_name(ica_s["name"]) == normalize_name(osm_s["name"])
+                if dist < 200 or name_sim:
+                    best_dist = dist
+                    best_match = osm_s
+                    best_idx = idx
+
+        if best_match:
+            osm_matched_indices.add(best_idx)
+            matched.append({
+                "ica": ica_s,
+                "osm": best_match,
+                "distance_m": round(best_dist),
+            })
+        else:
+            ica_only.append(ica_s)
+
+    osm_only = [s for i, s in enumerate(osm_stores) if i not in osm_matched_indices]
+
+    return {
+        "summary": {
+            "matched": len(matched),
+            "ica_only": len(ica_only),
+            "osm_only": len(osm_only),
+        },
+        "matched": matched,
+        "ica_only": ica_only,
+        "osm_only": osm_only,
+    }
+
+
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
 

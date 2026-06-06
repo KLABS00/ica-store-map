@@ -8,20 +8,80 @@
     <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-    <div id="map"></div>
-    <div class="controls">
-        <div class="toggle-group">
-            <button class="toggle-btn active" data-source="osm">OpenStreetMap</button>
-            <button class="toggle-btn" data-source="ica">ICA.se</button>
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <h1>ICA Stores Sweden</h1>
+            <div class="source-toggle">
+                <button class="source-btn" data-source="osm">OpenStreetMap</button>
+                <button class="source-btn active" data-source="ica">ICA.se</button>
+            </div>
         </div>
-        <div class="status" id="status">Click a source to load stores</div>
-        <div class="legend">
-            <div class="legend-item"><span class="legend-dot" style="background:#e74c3c"></span>Maxi</div>
-            <div class="legend-item"><span class="legend-dot" style="background:#3498db"></span>Kvantum</div>
-            <div class="legend-item"><span class="legend-dot" style="background:#27ae60"></span>Supermarket</div>
-            <div class="legend-item"><span class="legend-dot" style="background:#f39c12"></span>Nära</div>
+        <div class="tab-bar">
+            <button class="tab-btn active" data-tab="map">Map</button>
+            <button class="tab-btn" data-tab="list">List</button>
+            <button class="tab-btn" data-tab="validate">Validate</button>
+            <button class="tab-btn" data-tab="info">Info</button>
+        </div>
+        <div class="status-bar" id="status">Loading stores...</div>
+
+        <!-- Map tab -->
+        <div class="tab-content active" id="tab-map">
+            <div class="legend">
+                <div class="legend-item"><span class="legend-dot" style="background:#e74c3c"></span>Maxi</div>
+                <div class="legend-item"><span class="legend-dot" style="background:#3498db"></span>Kvantum</div>
+                <div class="legend-item"><span class="legend-dot" style="background:#27ae60"></span>Supermarket</div>
+                <div class="legend-item"><span class="legend-dot" style="background:#f39c12"></span>Nara</div>
+                <div class="legend-item"><span class="legend-dot" style="background:#9b59b6"></span>ToGo</div>
+                <div class="legend-item"><span class="legend-dot" style="background:#95a5a6"></span>Other</div>
+            </div>
+        </div>
+
+        <!-- List tab -->
+        <div class="tab-content" id="tab-list">
+            <div class="list-filters">
+                <input type="text" class="search-input" id="search" placeholder="Search by name or city...">
+                <div class="type-chips">
+                    <button class="type-chip active" data-type="all">All</button>
+                    <button class="type-chip" data-type="Maxi">Maxi</button>
+                    <button class="type-chip" data-type="Kvantum">Kvantum</button>
+                    <button class="type-chip" data-type="Supermarket">Supermarket</button>
+                    <button class="type-chip" data-type="Nära">Nara</button>
+                </div>
+            </div>
+            <div class="store-list" id="store-list"></div>
+        </div>
+
+        <!-- Validate tab -->
+        <div class="tab-content" id="tab-validate">
+            <div id="validate-content"><div class="status-bar">Click to load validation...</div></div>
+        </div>
+
+        <!-- Info tab -->
+        <div class="tab-content" id="tab-info">
+            <div class="info-content">
+                <h2>Data Sources</h2>
+                <div class="source-card">
+                    <h3>OpenStreetMap (Overpass API)</h3>
+                    <p>Crowd-sourced geographic data. We query the Overpass API for all nodes, ways, and relations in Sweden tagged with <code>brand~ICA</code> or <code>name~^ICA</code>. Returns ~1,400+ entries with coordinates, but address data is often incomplete since it depends on volunteer contributors. Anyone can improve the data at <a href="https://www.openstreetmap.org" target="_blank">openstreetmap.org</a>.</p>
+                </div>
+                <div class="source-card">
+                    <h3>ICA.se (Official)</h3>
+                    <p>Official store data extracted from ICA's public store finder page at <a href="https://www.ica.se/butiker/" target="_blank">ica.se/butiker</a>. The page embeds all ~1,287 stores as structured JSON in <code>window.__INITIAL_DATA__</code>, including store name, type (profile), full street address, postal code, city, and precise coordinates. Updated whenever ICA updates their website.</p>
+                </div>
+
+                <h2>How Validation Works</h2>
+                <p>The Validate tab cross-references both sources by matching stores that are within 500m of each other and share a similar name (or within 200m regardless of name). This surfaces:</p>
+                <p><strong style="color:#27ae60">Matched</strong> — stores confirmed in both sources, with the distance between their reported coordinates.</p>
+                <p><strong style="color:#f39c12">ICA-only</strong> — official stores that OSM volunteers haven't mapped yet, or that are tagged differently.</p>
+                <p><strong style="color:#e74c3c">OSM-only</strong> — crowd-sourced entries with no ICA match. Could be closed stores, non-grocery ICA businesses, or differently named locations.</p>
+
+                <h2>Limitations</h2>
+                <p>Both sources are cached server-side for 1 hour. OSM data may include closed stores, duplicate entries, or non-grocery ICA entities (e.g. ICA Banken ATMs). ICA data is a point-in-time snapshot and may lag behind real-world openings/closings.</p>
+            </div>
         </div>
     </div>
+
+    <div id="map"></div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
@@ -32,62 +92,58 @@
         }).addTo(map);
 
         const typeColors = {
-            'Maxi': '#e74c3c',
-            'Kvantum': '#3498db',
-            'Supermarket': '#27ae60',
-            'Nära': '#f39c12',
-            'ToGo': '#9b59b6',
-            'Other': '#95a5a6'
+            'Maxi': '#e74c3c', 'Kvantum': '#3498db', 'Supermarket': '#27ae60',
+            'Nära': '#f39c12', 'ToGo': '#9b59b6', 'Other': '#95a5a6'
         };
 
-        let markers = L.layerGroup().addTo(map);
+        let markersLayer = L.layerGroup().addTo(map);
         let currentSource = null;
+        let currentStores = [];
         const cache = {};
+        let validationData = null;
+        let storeMarkerMap = new Map();
 
         function createMarker(store) {
             const color = typeColors[store.type] || typeColors['Other'];
             const icon = L.divIcon({
                 className: '',
-                html: `<div style="
-                    width:12px;height:12px;border-radius:50%;
-                    background:${color};border:2px solid white;
-                    box-shadow:0 1px 4px rgba(0,0,0,0.3);
-                "></div>`,
-                iconSize: [12, 12],
-                iconAnchor: [6, 6]
+                html: `<div style="width:12px;height:12px;border-radius:50%;background:${color};border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.3);"></div>`,
+                iconSize: [12, 12], iconAnchor: [6, 6]
             });
-
             const parts = [`<strong>${store.name}</strong>`];
             if (store.type) parts.push(`<em>${store.type}</em>`);
             if (store.address) parts.push(store.address);
+            if (store.postalCode) parts.push(store.postalCode);
             if (store.city) parts.push(store.city);
-
-            return L.marker([store.lat, store.lon], { icon })
-                .bindPopup(parts.join('<br>'));
+            return L.marker([store.lat, store.lon], { icon }).bindPopup(parts.join('<br>'));
         }
 
         function setStatus(text, cls) {
             const el = document.getElementById('status');
             el.textContent = text;
-            el.className = 'status' + (cls ? ' ' + cls : '');
+            el.className = 'status-bar' + (cls ? ' ' + cls : '');
         }
 
+        function focusStore(store) {
+            if (!store.lat || !store.lon) return;
+            map.setView([store.lat, store.lon], 15);
+            const key = `${store.lat},${store.lon}`;
+            const marker = storeMarkerMap.get(key);
+            if (marker) marker.openPopup();
+        }
+
+        // Source loading
         async function loadSource(source) {
             if (currentSource === source) return;
             currentSource = source;
-
-            document.querySelectorAll('.toggle-btn').forEach(btn => {
-                btn.classList.toggle('active', btn.dataset.source === source);
-            });
+            document.querySelectorAll('.source-btn').forEach(b => b.classList.toggle('active', b.dataset.source === source));
 
             if (cache[source]) {
                 renderStores(cache[source]);
                 return;
             }
-
             setStatus('Loading stores...', 'loading');
-            markers.clearLayers();
-
+            markersLayer.clearLayers();
             try {
                 const resp = await fetch(`/api/stores/${source}`);
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -100,22 +156,172 @@
         }
 
         function renderStores(data) {
-            markers.clearLayers();
+            markersLayer.clearLayers();
+            storeMarkerMap.clear();
+            currentStores = data.stores;
             let mapped = 0;
             for (const store of data.stores) {
                 if (store.lat && store.lon) {
-                    markers.addLayer(createMarker(store));
+                    const marker = createMarker(store);
+                    markersLayer.addLayer(marker);
+                    storeMarkerMap.set(`${store.lat},${store.lon}`, marker);
                     mapped++;
                 }
             }
             setStatus(`${data.source}: ${mapped} stores on map (${data.count} total)`);
+            renderList();
         }
 
-        document.querySelectorAll('.toggle-btn').forEach(btn => {
+        // Tabs
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                btn.classList.add('active');
+                document.getElementById(`tab-${btn.dataset.tab}`).classList.add('active');
+                if (btn.dataset.tab === 'list') renderList();
+                if (btn.dataset.tab === 'validate' && !validationData) loadValidation();
+            });
+        });
+
+        // Source toggle
+        document.querySelectorAll('.source-btn').forEach(btn => {
             btn.addEventListener('click', () => loadSource(btn.dataset.source));
         });
 
-        loadSource('osm');
+        // List view
+        let searchTerm = '';
+        let activeType = 'all';
+
+        document.getElementById('search').addEventListener('input', e => {
+            searchTerm = e.target.value.toLowerCase();
+            renderList();
+        });
+
+        document.querySelectorAll('.type-chip').forEach(chip => {
+            chip.addEventListener('click', () => {
+                document.querySelectorAll('.type-chip').forEach(c => c.classList.remove('active'));
+                chip.classList.add('active');
+                activeType = chip.dataset.type;
+                renderList();
+            });
+        });
+
+        function renderList() {
+            const container = document.getElementById('store-list');
+            let filtered = currentStores.filter(s => {
+                if (activeType !== 'all' && s.type !== activeType && !(activeType === 'Nära' && s.type === 'Nara')) return false;
+                if (searchTerm) {
+                    const hay = `${s.name} ${s.city} ${s.address}`.toLowerCase();
+                    if (!hay.includes(searchTerm)) return false;
+                }
+                return true;
+            });
+
+            const total = currentStores.length;
+            let html = `<div style="padding:8px 16px;font-size:11px;color:#888;border-bottom:1px solid #f0f0f0;">Showing ${filtered.length} of ${total} stores</div>`;
+
+            for (const s of filtered.slice(0, 500)) {
+                const color = typeColors[s.type] || typeColors['Other'];
+                const addr = [s.address, s.city].filter(Boolean).join(', ');
+                html += `<div class="store-row" data-lat="${s.lat}" data-lon="${s.lon}">
+                    <span class="dot" style="background:${color}"></span>
+                    <div class="store-info">
+                        <div class="store-name">${s.name}</div>
+                        <div class="store-addr">${addr || 'No address'}</div>
+                    </div>
+                </div>`;
+            }
+            if (filtered.length > 500) {
+                html += `<div style="padding:12px 16px;font-size:11px;color:#888;text-align:center;">Showing first 500 of ${filtered.length} results. Narrow your search.</div>`;
+            }
+            container.innerHTML = html;
+
+            container.querySelectorAll('.store-row').forEach(row => {
+                row.addEventListener('click', () => {
+                    const lat = parseFloat(row.dataset.lat);
+                    const lon = parseFloat(row.dataset.lon);
+                    if (lat && lon) focusStore({ lat, lon });
+                });
+            });
+        }
+
+        // Validation
+        async function loadValidation() {
+            const container = document.getElementById('validate-content');
+            container.innerHTML = '<div class="status-bar loading">Cross-referencing sources...</div>';
+
+            try {
+                const resp = await fetch('/api/stores/validate');
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                validationData = await resp.json();
+                renderValidation();
+            } catch (err) {
+                container.innerHTML = `<div class="status-bar error">Error: ${err.message}</div>`;
+            }
+        }
+
+        function renderValidation() {
+            const d = validationData;
+            const s = d.summary;
+            const container = document.getElementById('validate-content');
+
+            let html = `
+                <div class="validate-summary">
+                    <div class="validate-stat matched"><div class="num">${s.matched}</div><div class="label">Matched</div></div>
+                    <div class="validate-stat ica-only"><div class="num">${s.ica_only}</div><div class="label">ICA only</div></div>
+                    <div class="validate-stat osm-only"><div class="num">${s.osm_only}</div><div class="label">OSM only</div></div>
+                </div>`;
+
+            html += renderValidateSection('Matched in both sources', d.matched.map(m =>
+                `<div class="validate-row" data-lat="${m.ica.lat}" data-lon="${m.ica.lon}">
+                    <div class="name">${m.ica.name}</div>
+                    <div class="detail">${m.ica.city || ''} &middot; <span class="distance">${m.distance_m}m apart</span></div>
+                </div>`
+            ).join(''), 'matched');
+
+            html += renderValidateSection('Only in ICA.se', d.ica_only.map(s =>
+                `<div class="validate-row" data-lat="${s.lat}" data-lon="${s.lon}">
+                    <div class="name">${s.name}</div>
+                    <div class="detail">${[s.address, s.city].filter(Boolean).join(', ') || 'No address'}</div>
+                </div>`
+            ).join(''), 'ica-only');
+
+            html += renderValidateSection('Only in OpenStreetMap', d.osm_only.map(s =>
+                `<div class="validate-row" data-lat="${s.lat}" data-lon="${s.lon}">
+                    <div class="name">${s.name}</div>
+                    <div class="detail">${[s.address, s.city].filter(Boolean).join(', ') || 'No address'}</div>
+                </div>`
+            ).join(''), 'osm-only');
+
+            container.innerHTML = html;
+
+            container.querySelectorAll('.validate-header').forEach(header => {
+                header.addEventListener('click', () => {
+                    header.classList.toggle('open');
+                    header.nextElementSibling.classList.toggle('open');
+                });
+            });
+
+            container.querySelectorAll('.validate-row').forEach(row => {
+                row.addEventListener('click', () => {
+                    const lat = parseFloat(row.dataset.lat);
+                    const lon = parseFloat(row.dataset.lon);
+                    if (lat && lon) {
+                        map.setView([lat, lon], 15);
+                    }
+                });
+            });
+        }
+
+        function renderValidateSection(title, content, cls) {
+            return `<div class="validate-section">
+                <div class="validate-header"><span>${title}</span><span class="arrow">&#9654;</span></div>
+                <div class="validate-list">${content}</div>
+            </div>`;
+        }
+
+        loadSource('ica');
     </script>
 </body>
 </html>
