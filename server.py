@@ -1,6 +1,7 @@
 import asyncio
 import json
 import math
+import os
 import re
 import time
 from contextlib import asynccontextmanager
@@ -154,6 +155,136 @@ ICA_URL = "https://www.ica.se/butiker/"
 osm_cache = {"data": None, "ts": 0}
 ica_cache = {"data": None, "ts": 0}
 CACHE_TTL = 3600
+
+# Bolagsverket API config
+BV_TOKEN_URL = os.environ.get(
+    "BV_TOKEN_URL", "https://portal.api.bolagsverket.se/oauth2/token"
+)
+BV_BASE_URL = os.environ.get(
+    "BV_BASE_URL", "https://gw.api.bolagsverket.se/vardefulla-datamangder/v1"
+)
+BV_CLIENT_ID = os.environ.get("BV_CLIENT_ID", "")
+BV_CLIENT_SECRET = os.environ.get("BV_CLIENT_SECRET", "")
+
+bv_token_cache = {"token": None, "expires_at": 0.0}
+bv_company_cache: dict = {}
+
+ICA_PARENT_ORGS = [
+    "5560482837",  # ICA Gruppen AB
+    "5560210261",  # ICA Sverige AB
+    "5560334610",  # ICA Fastigheter AB
+]
+
+
+async def bv_get_token() -> str:
+    now = time.time()
+    if bv_token_cache["token"] and now < bv_token_cache["expires_at"]:
+        return bv_token_cache["token"]
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            BV_TOKEN_URL,
+            data={
+                "grant_type": "client_credentials",
+                "scope": "vardefulla-datamangder:read",
+            },
+            auth=(BV_CLIENT_ID, BV_CLIENT_SECRET),
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        bv_token_cache["token"] = payload["access_token"]
+        bv_token_cache["expires_at"] = now + payload.get("expires_in", 3600) - 60
+        return bv_token_cache["token"]
+
+
+async def bv_lookup_org(org_number: str) -> dict | None:
+    digits = "".join(ch for ch in org_number if ch.isdigit())
+    if len(digits) == 12 and digits.startswith("16"):
+        digits = digits[2:]
+    elif len(digits) == 12:
+        digits = digits[:10]
+    if len(digits) != 10:
+        return None
+
+    if digits in bv_company_cache:
+        return bv_company_cache[digits]
+
+    token = await bv_get_token()
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{BV_BASE_URL}/organisationer",
+            json={"identitetsbeteckning": digits},
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+            },
+        )
+        if resp.status_code in (400, 404):
+            return None
+        resp.raise_for_status()
+        data = resp.json()
+        orgs = data.get("organisationer", [])
+        if not orgs:
+            return None
+        parsed = parse_bv_company(orgs[0])
+        bv_company_cache[digits] = parsed
+        return parsed
+
+
+def parse_bv_company(company: dict) -> dict:
+    names_obj = company.get("organisationsnamn") or {}
+    names = names_obj.get("organisationsnamnLista") or []
+    primary_name = ""
+    for n in names:
+        name_type = ((n.get("organisationsnamntyp") or {}).get("kod") or "").upper()
+        if name_type == "FORETAGSNAMN":
+            primary_name = n.get("namn", "")
+            break
+    if not primary_name and names:
+        primary_name = names[0].get("namn", "")
+
+    org_id = company.get("organisationsidentitet") or {}
+    org_number = org_id.get("identitetsbeteckning", "")
+    org_form = company.get("organisationsform") or {}
+
+    post_addr = company.get("postadressOrganisation") or {}
+    addr = post_addr.get("postadress") or {}
+    address_parts = [
+        addr.get("utdelningsadress", ""),
+        addr.get("postnummer", ""),
+        addr.get("postort", ""),
+    ]
+    address = ", ".join(p for p in address_parts if p)
+
+    active_obj = company.get("verksamOrganisation") or {}
+    active_code = (active_obj.get("kod") or "").upper()
+    dereg = company.get("avregistreradOrganisation")
+    liquidation = company.get("pagaendeAvvecklingsEllerOmstruktureringsforfarande")
+
+    if liquidation:
+        status = "liquidation"
+    elif dereg:
+        status = "deregistered"
+    elif active_code != "JA":
+        status = "inactive"
+    else:
+        status = "active"
+
+    reg_obj = company.get("organisationsdatum") or {}
+    reg_date = reg_obj.get("registreringsdatum", "")
+
+    desc_obj = company.get("verksamhetsbeskrivning") or {}
+    description = desc_obj.get("beskrivning", "")
+
+    return {
+        "name": primary_name,
+        "org_number": org_number,
+        "status": status,
+        "org_form": org_form.get("klartext", ""),
+        "address": address,
+        "registered_date": reg_date,
+        "description": description,
+    }
 
 
 def classify_store_type(name: str) -> str:
@@ -322,6 +453,34 @@ async def validate_stores():
 @app.get("/api/changelog")
 async def get_changelog():
     return load_changelog()
+
+
+@app.get("/api/company/ica-group")
+async def get_ica_group():
+    if not BV_CLIENT_ID:
+        return {"error": "Bolagsverket API not configured", "companies": []}
+    results = []
+    for org_nr in ICA_PARENT_ORGS:
+        try:
+            parsed = await bv_lookup_org(org_nr)
+            if parsed:
+                results.append(parsed)
+        except Exception as e:
+            print(f"[bv] Failed to look up {org_nr}: {e}")
+    return {"companies": results}
+
+
+@app.get("/api/company/{org_number}")
+async def get_company(org_number: str):
+    if not BV_CLIENT_ID:
+        return {"error": "Bolagsverket API not configured"}
+    try:
+        parsed = await bv_lookup_org(org_number)
+        if not parsed:
+            return {"error": "Not found"}
+        return parsed
+    except Exception as e:
+        return {"error": str(e)}
 
 
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")

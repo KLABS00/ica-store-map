@@ -22,6 +22,7 @@
             <button class="tab-btn" data-tab="list">List</button>
             <button class="tab-btn" data-tab="validate">Validate</button>
             <button class="tab-btn" data-tab="news">News</button>
+            <button class="tab-btn" data-tab="company">Company</button>
             <button class="tab-btn" data-tab="info">Info</button>
         </div>
         <div class="status-bar" id="status">Loading stores...</div>
@@ -63,6 +64,17 @@
             <div id="news-content"><div class="status-bar">Loading changelog...</div></div>
         </div>
 
+        <!-- Company tab -->
+        <div class="tab-content" id="tab-company">
+            <div class="company-search">
+                <input type="text" class="search-input" id="org-search" placeholder="Search org number (e.g. 556048-2837)">
+                <button class="company-search-btn" id="org-search-btn">Look up</button>
+            </div>
+            <div id="org-search-result"></div>
+            <div class="company-section-title">ICA Corporate Structure</div>
+            <div id="ica-group-content"><div class="status-bar loading">Loading corporate data...</div></div>
+        </div>
+
         <!-- Info tab -->
         <div class="tab-content" id="tab-info">
             <div class="info-content">
@@ -82,8 +94,11 @@
                 <p><strong style="color:#f39c12">ICA-only</strong> — official stores that OSM volunteers haven't mapped yet, or that are tagged differently.</p>
                 <p><strong style="color:#e74c3c">OSM-only</strong> — crowd-sourced entries with no ICA match. Could be closed stores, non-grocery ICA businesses, or differently named locations.</p>
 
+                <h2>Company Data (Bolagsverket)</h2>
+                <p>The Company tab shows registered company data from <strong>Bolagsverket</strong> (the Swedish Companies Registration Office) via their public API. ICA stores are franchises — each store is typically owned by an independent entrepreneur operating under the ICA brand. The Company tab shows the parent corporate entities (ICA Gruppen AB, ICA Sverige AB). You can also look up any Swedish company by org number.</p>
+
                 <h2>Limitations</h2>
-                <p>Both sources are cached server-side for 1 hour. OSM data may include closed stores, duplicate entries, or non-grocery ICA entities (e.g. ICA Banken ATMs). ICA data is a point-in-time snapshot and may lag behind real-world openings/closings.</p>
+                <p>Both sources are cached server-side for 1 hour. OSM data may include closed stores, duplicate entries, or non-grocery ICA entities (e.g. ICA Banken ATMs). ICA data is a point-in-time snapshot and may lag behind real-world openings/closings. Individual store franchise owners can't be matched automatically since the Bolagsverket API requires an org number for lookup — ICA's store data doesn't include franchise org numbers.</p>
             </div>
         </div>
     </div>
@@ -189,6 +204,7 @@
                 if (btn.dataset.tab === 'list') renderList();
                 if (btn.dataset.tab === 'validate' && !validationData) loadValidation();
                 if (btn.dataset.tab === 'news') loadChangelog();
+                if (btn.dataset.tab === 'company') loadIcaGroup();
             });
         });
 
@@ -373,6 +389,75 @@
                 container.innerHTML = `<div class="status-bar error">Error: ${err.message}</div>`;
             }
         }
+
+        // Company tab
+        let icaGroupLoaded = false;
+
+        async function loadIcaGroup() {
+            if (icaGroupLoaded) return;
+            const container = document.getElementById('ica-group-content');
+            try {
+                const resp = await fetch('/api/company/ica-group');
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                icaGroupLoaded = true;
+
+                if (data.error) {
+                    container.innerHTML = `<div class="info-content"><p style="color:#888;">${data.error}. Set BV_CLIENT_ID and BV_CLIENT_SECRET environment variables.</p></div>`;
+                    return;
+                }
+
+                if (!data.companies.length) {
+                    container.innerHTML = `<div class="info-content"><p>No corporate data found.</p></div>`;
+                    return;
+                }
+
+                container.innerHTML = data.companies.map(renderCompanyCard).join('');
+            } catch (err) {
+                container.innerHTML = `<div class="status-bar error">Error: ${err.message}</div>`;
+            }
+        }
+
+        function renderCompanyCard(c) {
+            const statusColors = { active: '#27ae60', inactive: '#95a5a6', deregistered: '#e74c3c', liquidation: '#e74c3c' };
+            const statusColor = statusColors[c.status] || '#95a5a6';
+            const orgFormatted = c.org_number ? c.org_number.replace(/(\d{6})(\d{4})/, '$1-$2') : '';
+            return `<div class="company-card">
+                <div class="company-name">${c.name}</div>
+                <div class="company-meta">
+                    <span class="company-org">${orgFormatted}</span>
+                    <span class="company-status" style="color:${statusColor}">${c.status}</span>
+                </div>
+                ${c.org_form ? `<div class="company-detail">${c.org_form}</div>` : ''}
+                ${c.address ? `<div class="company-detail">${c.address}</div>` : ''}
+                ${c.registered_date ? `<div class="company-detail">Registered: ${c.registered_date}</div>` : ''}
+                ${c.description ? `<div class="company-desc">${c.description}</div>` : ''}
+            </div>`;
+        }
+
+        document.getElementById('org-search-btn').addEventListener('click', async () => {
+            const input = document.getElementById('org-search');
+            const org = input.value.trim();
+            if (!org) return;
+            const container = document.getElementById('org-search-result');
+            container.innerHTML = '<div class="status-bar loading">Looking up...</div>';
+            try {
+                const resp = await fetch(`/api/company/${encodeURIComponent(org)}`);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                if (data.error) {
+                    container.innerHTML = `<div class="status-bar error">${data.error}</div>`;
+                } else {
+                    container.innerHTML = renderCompanyCard(data);
+                }
+            } catch (err) {
+                container.innerHTML = `<div class="status-bar error">Error: ${err.message}</div>`;
+            }
+        });
+
+        document.getElementById('org-search').addEventListener('keydown', e => {
+            if (e.key === 'Enter') document.getElementById('org-search-btn').click();
+        });
 
         // Mobile sidebar toggle
         document.getElementById('sidebar-toggle').addEventListener('click', () => {
