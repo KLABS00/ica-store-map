@@ -21,6 +21,7 @@
             <button class="tab-btn active" data-tab="map">Map</button>
             <button class="tab-btn" data-tab="list">List</button>
             <button class="tab-btn" data-tab="validate">Validate</button>
+            <button class="tab-btn" data-tab="news">News</button>
             <button class="tab-btn" data-tab="info">Info</button>
         </div>
         <div class="status-bar" id="status">Loading stores...</div>
@@ -55,6 +56,11 @@
         <!-- Validate tab -->
         <div class="tab-content" id="tab-validate">
             <div id="validate-content"><div class="status-bar">Click to load validation...</div></div>
+        </div>
+
+        <!-- News tab -->
+        <div class="tab-content" id="tab-news">
+            <div id="news-content"><div class="status-bar">Loading changelog...</div></div>
         </div>
 
         <!-- Info tab -->
@@ -182,6 +188,7 @@
                 document.getElementById(`tab-${btn.dataset.tab}`).classList.add('active');
                 if (btn.dataset.tab === 'list') renderList();
                 if (btn.dataset.tab === 'validate' && !validationData) loadValidation();
+                if (btn.dataset.tab === 'news') loadChangelog();
             });
         });
 
@@ -320,6 +327,51 @@
                 <div class="validate-header"><span>${title}</span><span class="arrow">&#9654;</span></div>
                 <div class="validate-list">${content}</div>
             </div>`;
+        }
+
+        // News/Changelog
+        let changelogLoaded = false;
+        async function loadChangelog() {
+            if (changelogLoaded) return;
+            const container = document.getElementById('news-content');
+            try {
+                const resp = await fetch('/api/changelog');
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const entries = await resp.json();
+                changelogLoaded = true;
+
+                if (!entries.length) {
+                    container.innerHTML = `<div class="info-content">
+                        <h2>No changes yet</h2>
+                        <p>The server checks ICA.se every 24 hours for store changes (new stores, closures, address updates). Changes will appear here once detected.</p>
+                        <p style="color:#888;font-size:12px;">First check happens shortly after server startup to establish a baseline.</p>
+                    </div>`;
+                    return;
+                }
+
+                const typeIcons = { added: '+', removed: '-', changed: '~' };
+                const typeColors = { added: '#27ae60', removed: '#e74c3c', changed: '#f39c12' };
+
+                let currentDate = '';
+                let html = '';
+                for (const e of entries) {
+                    const date = e.date.split(' ')[0];
+                    if (date !== currentDate) {
+                        currentDate = date;
+                        html += `<div class="changelog-date">${date}</div>`;
+                    }
+                    html += `<div class="changelog-entry">
+                        <span class="changelog-icon" style="background:${typeColors[e.type]}">${typeIcons[e.type]}</span>
+                        <div class="changelog-info">
+                            <div class="changelog-store">${e.store}</div>
+                            <div class="changelog-detail">${e.type}: ${e.detail}</div>
+                        </div>
+                    </div>`;
+                }
+                container.innerHTML = html;
+            } catch (err) {
+                container.innerHTML = `<div class="status-bar error">Error: ${err.message}</div>`;
+            }
         }
 
         // Mobile sidebar toggle

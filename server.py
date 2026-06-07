@@ -1,6 +1,10 @@
+import asyncio
 import json
+import math
 import re
 import time
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -8,7 +12,140 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-app = FastAPI()
+DATA_DIR = Path(__file__).parent / "data"
+DATA_DIR.mkdir(exist_ok=True)
+CHANGELOG_FILE = DATA_DIR / "changelog.json"
+PREVIOUS_ICA_FILE = DATA_DIR / "previous_ica.json"
+
+
+def load_changelog() -> list:
+    if CHANGELOG_FILE.exists():
+        try:
+            return json.loads(CHANGELOG_FILE.read_text())
+        except Exception:
+            pass
+    return []
+
+
+def save_changelog(entries: list):
+    CHANGELOG_FILE.write_text(json.dumps(entries, ensure_ascii=False, indent=2))
+
+
+def load_previous_ica() -> dict | None:
+    if PREVIOUS_ICA_FILE.exists():
+        try:
+            return json.loads(PREVIOUS_ICA_FILE.read_text())
+        except Exception:
+            pass
+    return None
+
+
+def save_previous_ica(stores: list):
+    PREVIOUS_ICA_FILE.write_text(json.dumps(stores, ensure_ascii=False))
+
+
+def diff_ica_data(old_stores: list, new_stores: list) -> list:
+    old_by_name = {s["name"]: s for s in old_stores}
+    new_by_name = {s["name"]: s for s in new_stores}
+    changes = []
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+
+    for name, s in new_by_name.items():
+        if name not in old_by_name:
+            changes.append({
+                "date": now,
+                "type": "added",
+                "store": s["name"],
+                "detail": f'{s["type"]} in {s["city"]}' + (f' ({s["address"]})' if s["address"] else ""),
+            })
+        else:
+            old = old_by_name[name]
+            diffs = []
+            if old.get("address") != s.get("address"):
+                diffs.append(f'address: "{old.get("address")}" → "{s.get("address")}"')
+            if old.get("city") != s.get("city"):
+                diffs.append(f'city: "{old.get("city")}" → "{s.get("city")}"')
+            if old.get("type") != s.get("type"):
+                diffs.append(f'type: {old.get("type")} → {s.get("type")}')
+            if diffs:
+                changes.append({
+                    "date": now,
+                    "type": "changed",
+                    "store": s["name"],
+                    "detail": ", ".join(diffs),
+                })
+
+    for name, s in old_by_name.items():
+        if name not in new_by_name:
+            changes.append({
+                "date": now,
+                "type": "removed",
+                "store": s["name"],
+                "detail": f'{s["type"]} in {s["city"]}',
+            })
+
+    return changes
+
+
+async def check_ica_changes():
+    try:
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+            resp = await client.get("https://www.ica.se/butiker/", headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            })
+            resp.raise_for_status()
+
+        match = re.search(r"window\.__INITIAL_DATA__\s*=\s*(.+?);\s*</script>", resp.text, re.DOTALL)
+        if not match:
+            return
+
+        raw = match.group(1).replace(":undefined", ":null")
+        data = json.loads(raw)
+        slim_stores = data.get("SlimStores", {}).get("slimStores", [])
+
+        new_stores = []
+        for s in slim_stores:
+            addr = s.get("address", {})
+            new_stores.append({
+                "name": s.get("storeName", ""),
+                "type": s.get("profile", "Other"),
+                "address": addr.get("street", ""),
+                "city": addr.get("city", ""),
+            })
+
+        previous = load_previous_ica()
+        if previous is not None:
+            changes = diff_ica_data(previous, new_stores)
+            if changes:
+                changelog = load_changelog()
+                changelog = changes + changelog
+                save_changelog(changelog)
+                print(f"[changelog] {len(changes)} changes detected")
+            else:
+                print("[changelog] No changes detected")
+        else:
+            print("[changelog] First run, saving baseline")
+
+        save_previous_ica(new_stores)
+    except Exception as e:
+        print(f"[changelog] Error checking changes: {e}")
+
+
+async def changelog_loop():
+    await asyncio.sleep(5)
+    while True:
+        await check_ica_changes()
+        await asyncio.sleep(86400)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(changelog_loop())
+    yield
+    task.cancel()
+
+
+app = FastAPI(lifespan=lifespan)
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 OVERPASS_QUERY = '[out:json][timeout:60];area["ISO3166-1"="SE"]->.sweden;(nwr["brand"~"ICA",i](area.sweden);nwr["name"~"^ICA "](area.sweden););out center body;'
@@ -117,8 +254,6 @@ async def get_ica_stores():
     return result
 
 
-import math
-
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371000
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
@@ -182,6 +317,11 @@ async def validate_stores():
         "ica_only": ica_only,
         "osm_only": osm_only,
     }
+
+
+@app.get("/api/changelog")
+async def get_changelog():
+    return load_changelog()
 
 
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")

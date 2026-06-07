@@ -284,6 +284,42 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
     margin-bottom: 0;
 }
 
+/* News/Changelog */
+.changelog-date {
+    padding: 10px 16px 4px;
+    font-size: 12px;
+    font-weight: 700;
+    color: #1a73e8;
+    background: #f8f9fa;
+    border-bottom: 1px solid #eee;
+}
+
+.changelog-entry {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 16px;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.changelog-icon {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    color: white;
+    font-size: 14px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    margin-top: 1px;
+}
+
+.changelog-info { flex: 1; min-width: 0; }
+.changelog-store { font-size: 13px; font-weight: 600; color: #1a1a1a; }
+.changelog-detail { font-size: 11px; color: #888; margin-top: 2px; }
+
 /* Mobile toggle button */
 .sidebar-toggle {
     display: none;
