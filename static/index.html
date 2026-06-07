@@ -20,7 +20,6 @@
         <div class="tab-bar">
             <button class="tab-btn active" data-tab="map">Map</button>
             <button class="tab-btn" data-tab="list">List</button>
-            <button class="tab-btn" data-tab="validate">Validate</button>
             <button class="tab-btn" data-tab="news">News</button>
             <button class="tab-btn" data-tab="company">Company</button>
             <button class="tab-btn" data-tab="info">Info</button>
@@ -54,11 +53,6 @@
             <div class="store-list" id="store-list"></div>
         </div>
 
-        <!-- Validate tab -->
-        <div class="tab-content" id="tab-validate">
-            <div id="validate-content"><div class="status-bar">Click to load validation...</div></div>
-        </div>
-
         <!-- News tab -->
         <div class="tab-content" id="tab-news">
             <div id="news-content"><div class="status-bar">Loading changelog...</div></div>
@@ -66,13 +60,17 @@
 
         <!-- Company tab -->
         <div class="tab-content" id="tab-company">
-            <div class="company-search">
-                <input type="text" class="search-input" id="org-search" placeholder="Search org number (e.g. 556048-2837)">
-                <button class="company-search-btn" id="org-search-btn">Look up</button>
+            <div id="enrichment-summary"></div>
+            <div class="list-filters">
+                <input type="text" class="search-input" id="company-filter" placeholder="Filter stores by name or city...">
+                <div class="type-chips">
+                    <button class="type-chip enrich-chip active" data-show="all">All</button>
+                    <button class="type-chip enrich-chip" data-show="matched">Matched</button>
+                    <button class="type-chip enrich-chip" data-show="unmatched">Unmatched</button>
+                    <button class="type-chip enrich-chip" data-show="corporate">Corporate</button>
+                </div>
             </div>
-            <div id="org-search-result"></div>
-            <div class="company-section-title">ICA Corporate Structure</div>
-            <div id="ica-group-content"><div class="status-bar loading">Loading corporate data...</div></div>
+            <div class="store-list" id="enrichment-content"><div class="status-bar loading">Loading company data...</div></div>
         </div>
 
         <!-- Info tab -->
@@ -87,12 +85,6 @@
                     <h3>ICA.se (Official)</h3>
                     <p>Official store data extracted from ICA's public store finder page at <a href="https://www.ica.se/butiker/" target="_blank">ica.se/butiker</a>. The page embeds all ~1,287 stores as structured JSON in <code>window.__INITIAL_DATA__</code>, including store name, type (profile), full street address, postal code, city, and precise coordinates. Updated whenever ICA updates their website.</p>
                 </div>
-
-                <h2>How Validation Works</h2>
-                <p>The Validate tab cross-references both sources by matching stores that are within 500m of each other and share a similar name (or within 200m regardless of name). This surfaces:</p>
-                <p><strong style="color:#27ae60">Matched</strong> — stores confirmed in both sources, with the distance between their reported coordinates.</p>
-                <p><strong style="color:#f39c12">ICA-only</strong> — official stores that OSM volunteers haven't mapped yet, or that are tagged differently.</p>
-                <p><strong style="color:#e74c3c">OSM-only</strong> — crowd-sourced entries with no ICA match. Could be closed stores, non-grocery ICA businesses, or differently named locations.</p>
 
                 <h2>Company Data (Bolagsverket)</h2>
                 <p>The Company tab shows registered company data from <strong>Bolagsverket</strong> (the Swedish Companies Registration Office) via their public API. ICA stores are franchises — each store is typically owned by an independent entrepreneur operating under the ICA brand. The Company tab shows the parent corporate entities (ICA Gruppen AB, ICA Sverige AB). You can also look up any Swedish company by org number.</p>
@@ -122,7 +114,6 @@
         let currentSource = null;
         let currentStores = [];
         const cache = {};
-        let validationData = null;
         let storeMarkerMap = new Map();
 
         function createMarker(store) {
@@ -132,12 +123,33 @@
                 html: `<div style="width:12px;height:12px;border-radius:50%;background:${color};border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.3);"></div>`,
                 iconSize: [12, 12], iconAnchor: [6, 6]
             });
-            const parts = [`<strong>${store.name}</strong>`];
+            const safeName = store.name.replace(/'/g, "\\'");
+            const parts = [`<a href="#" onclick="showStoreInSidebar('${safeName}');return false;" style="font-weight:700;color:#1a73e8;text-decoration:none;">${store.name}</a>`];
             if (store.type) parts.push(`<em>${store.type}</em>`);
             if (store.address) parts.push(store.address);
             if (store.postalCode) parts.push(store.postalCode);
             if (store.city) parts.push(store.city);
             return L.marker([store.lat, store.lon], { icon }).bindPopup(parts.join('<br>'));
+        }
+
+        function showStoreInSidebar(name) {
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            const listTab = document.querySelector('[data-tab="list"]');
+            listTab.classList.add('active');
+            document.getElementById('tab-list').classList.add('active');
+            const searchInput = document.getElementById('search');
+            searchInput.value = name;
+            searchTerm = name.toLowerCase();
+            activeType = 'all';
+            document.querySelectorAll('.type-chip').forEach(c => c.classList.remove('active'));
+            document.querySelector('[data-type="all"]').classList.add('active');
+            renderList();
+            const sidebar = document.getElementById('sidebar');
+            if (!sidebar.classList.contains('open') && window.innerWidth <= 768) {
+                sidebar.classList.add('open');
+                document.getElementById('sidebar-toggle').textContent = '✕';
+            }
         }
 
         function setStatus(text, cls) {
@@ -202,9 +214,8 @@
                 btn.classList.add('active');
                 document.getElementById(`tab-${btn.dataset.tab}`).classList.add('active');
                 if (btn.dataset.tab === 'list') renderList();
-                if (btn.dataset.tab === 'validate' && !validationData) loadValidation();
                 if (btn.dataset.tab === 'news') loadChangelog();
-                if (btn.dataset.tab === 'company') loadIcaGroup();
+                if (btn.dataset.tab === 'company') loadEnrichment();
             });
         });
 
@@ -270,81 +281,6 @@
             });
         }
 
-        // Validation
-        async function loadValidation() {
-            const container = document.getElementById('validate-content');
-            container.innerHTML = '<div class="status-bar loading">Cross-referencing sources...</div>';
-
-            try {
-                const resp = await fetch('/api/stores/validate');
-                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                validationData = await resp.json();
-                renderValidation();
-            } catch (err) {
-                container.innerHTML = `<div class="status-bar error">Error: ${err.message}</div>`;
-            }
-        }
-
-        function renderValidation() {
-            const d = validationData;
-            const s = d.summary;
-            const container = document.getElementById('validate-content');
-
-            let html = `
-                <div class="validate-summary">
-                    <div class="validate-stat matched"><div class="num">${s.matched}</div><div class="label">Matched</div></div>
-                    <div class="validate-stat ica-only"><div class="num">${s.ica_only}</div><div class="label">ICA only</div></div>
-                    <div class="validate-stat osm-only"><div class="num">${s.osm_only}</div><div class="label">OSM only</div></div>
-                </div>`;
-
-            html += renderValidateSection('Matched in both sources', d.matched.map(m =>
-                `<div class="validate-row" data-lat="${m.ica.lat}" data-lon="${m.ica.lon}">
-                    <div class="name">${m.ica.name}</div>
-                    <div class="detail">${m.ica.city || ''} &middot; <span class="distance">${m.distance_m}m apart</span></div>
-                </div>`
-            ).join(''), 'matched');
-
-            html += renderValidateSection('Only in ICA.se', d.ica_only.map(s =>
-                `<div class="validate-row" data-lat="${s.lat}" data-lon="${s.lon}">
-                    <div class="name">${s.name}</div>
-                    <div class="detail">${[s.address, s.city].filter(Boolean).join(', ') || 'No address'}</div>
-                </div>`
-            ).join(''), 'ica-only');
-
-            html += renderValidateSection('Only in OpenStreetMap', d.osm_only.map(s =>
-                `<div class="validate-row" data-lat="${s.lat}" data-lon="${s.lon}">
-                    <div class="name">${s.name}</div>
-                    <div class="detail">${[s.address, s.city].filter(Boolean).join(', ') || 'No address'}</div>
-                </div>`
-            ).join(''), 'osm-only');
-
-            container.innerHTML = html;
-
-            container.querySelectorAll('.validate-header').forEach(header => {
-                header.addEventListener('click', () => {
-                    header.classList.toggle('open');
-                    header.nextElementSibling.classList.toggle('open');
-                });
-            });
-
-            container.querySelectorAll('.validate-row').forEach(row => {
-                row.addEventListener('click', () => {
-                    const lat = parseFloat(row.dataset.lat);
-                    const lon = parseFloat(row.dataset.lon);
-                    if (lat && lon) {
-                        map.setView([lat, lon], 15);
-                    }
-                });
-            });
-        }
-
-        function renderValidateSection(title, content, cls) {
-            return `<div class="validate-section">
-                <div class="validate-header"><span>${title}</span><span class="arrow">&#9654;</span></div>
-                <div class="validate-list">${content}</div>
-            </div>`;
-        }
-
         // News/Changelog
         let changelogLoaded = false;
         async function loadChangelog() {
@@ -391,28 +327,31 @@
         }
 
         // Company tab
-        let icaGroupLoaded = false;
+        let enrichmentData = null;
+        let enrichFilter = 'all';
+        let enrichSearch = '';
 
-        async function loadIcaGroup() {
-            if (icaGroupLoaded) return;
-            const container = document.getElementById('ica-group-content');
+        async function loadEnrichment() {
+            if (enrichmentData) { renderEnrichment(); return; }
+            const container = document.getElementById('enrichment-content');
+            container.innerHTML = '<div class="status-bar loading">Loading company matches...</div>';
+
             try {
-                const resp = await fetch('/api/company/ica-group');
-                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                const data = await resp.json();
-                icaGroupLoaded = true;
+                const [enrichResp, groupResp] = await Promise.all([
+                    fetch('/api/stores/enriched'),
+                    fetch('/api/company/ica-group'),
+                ]);
+                const enrichData = await enrichResp.json();
+                const groupData = await groupResp.json();
 
-                if (data.error) {
-                    container.innerHTML = `<div class="info-content"><p style="color:#888;">${data.error}. Set BV_CLIENT_ID and BV_CLIENT_SECRET environment variables.</p></div>`;
+                if (enrichData.error) {
+                    container.innerHTML = `<div class="status-bar error">${enrichData.error}</div>`;
                     return;
                 }
 
-                if (!data.companies.length) {
-                    container.innerHTML = `<div class="info-content"><p>No corporate data found.</p></div>`;
-                    return;
-                }
-
-                container.innerHTML = data.companies.map(renderCompanyCard).join('');
+                enrichmentData = enrichData;
+                enrichmentData.corporate = groupData.companies || [];
+                renderEnrichment();
             } catch (err) {
                 container.innerHTML = `<div class="status-bar error">Error: ${err.message}</div>`;
             }
@@ -435,28 +374,121 @@
             </div>`;
         }
 
-        document.getElementById('org-search-btn').addEventListener('click', async () => {
-            const input = document.getElementById('org-search');
+        function renderEnrichment() {
+            const d = enrichmentData;
+            const s = d.summary;
+
+            document.getElementById('enrichment-summary').innerHTML = `
+                <div class="validate-summary">
+                    <div class="validate-stat" style="border-left:3px solid #1a73e8"><div class="num">${s.total}</div><div class="label">Total</div></div>
+                    <div class="validate-stat matched"><div class="num">${s.matched}</div><div class="label">Matched</div></div>
+                    <div class="validate-stat osm-only"><div class="num">${s.unmatched}</div><div class="label">Unmatched</div></div>
+                </div>
+                ${!d.ready ? '<div class="status-bar loading">Still loading companies from Bolagsverket... Refresh for more matches.</div>' : ''}`;
+
+            const container = document.getElementById('enrichment-content');
+            let html = '';
+
+            if (enrichFilter === 'all' || enrichFilter === 'matched') {
+                const items = filterStores(d.matched.map(m => m.store));
+                for (const m of d.matched) {
+                    if (!items.includes(m.store)) continue;
+                    const color = typeColors[m.store.type] || typeColors['Other'];
+                    const addr = [m.store.address, m.store.city].filter(Boolean).join(', ');
+                    html += `<div class="store-row enriched-row">
+                        <span class="dot" style="background:${color}"></span>
+                        <div class="store-info" style="flex:1">
+                            <div class="store-name">${m.store.name}</div>
+                            <div class="store-addr">${addr}</div>
+                            <div class="match-info">
+                                <span class="match-badge ${m.match_type}">${m.match_type}</span>
+                                <span class="match-company">${m.company.name}</span>
+                                <span class="company-org">${m.company.org_number.replace(/(\d{6})(\d{4})/, '$1-$2')}</span>
+                            </div>
+                        </div>
+                    </div>`;
+                }
+            }
+
+            if (enrichFilter === 'all' || enrichFilter === 'unmatched') {
+                const items = filterStores(d.unmatched);
+                for (const store of items) {
+                    const color = typeColors[store.type] || typeColors['Other'];
+                    const addr = [store.address, store.city].filter(Boolean).join(', ');
+                    const safeName = store.name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+                    html += `<div class="store-row enriched-row" id="store-${safeName.replace(/\s/g, '_')}">
+                        <span class="dot" style="background:${color}"></span>
+                        <div class="store-info" style="flex:1">
+                            <div class="store-name">${store.name}</div>
+                            <div class="store-addr">${addr}</div>
+                            <div class="match-input" id="input-${safeName.replace(/\s/g, '_')}">
+                                <input type="text" class="search-input match-org-input" placeholder="Org number" style="flex:1;padding:4px 8px;font-size:11px;">
+                                <button class="company-search-btn" style="padding:4px 10px;font-size:11px;" onclick="matchStore('${safeName}', this)">Match</button>
+                            </div>
+                        </div>
+                    </div>`;
+                }
+            }
+
+            if (enrichFilter === 'all' || enrichFilter === 'corporate') {
+                if (d.corporate && d.corporate.length) {
+                    html += '<div class="company-section-title">ICA Corporate Structure</div>';
+                    html += d.corporate.map(renderCompanyCard).join('');
+                }
+            }
+
+            if (!html) html = '<div class="status-bar">No results matching filter.</div>';
+            container.innerHTML = html;
+        }
+
+        function filterStores(stores) {
+            if (!enrichSearch) return stores;
+            return stores.filter(s => {
+                const hay = `${s.name} ${s.city} ${s.address}`.toLowerCase();
+                return hay.includes(enrichSearch);
+            });
+        }
+
+        async function matchStore(storeName, btn) {
+            const input = btn.previousElementSibling;
             const org = input.value.trim();
             if (!org) return;
-            const container = document.getElementById('org-search-result');
-            container.innerHTML = '<div class="status-bar loading">Looking up...</div>';
+            btn.disabled = true;
+            btn.textContent = '...';
             try {
-                const resp = await fetch(`/api/company/${encodeURIComponent(org)}`);
-                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const resp = await fetch('/api/stores/match', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ store_name: storeName, org_number: org }),
+                });
                 const data = await resp.json();
                 if (data.error) {
-                    container.innerHTML = `<div class="status-bar error">${data.error}</div>`;
-                } else {
-                    container.innerHTML = renderCompanyCard(data);
+                    alert(data.error);
+                    btn.disabled = false;
+                    btn.textContent = 'Match';
+                    return;
                 }
+                enrichmentData = null;
+                await loadEnrichment();
             } catch (err) {
-                container.innerHTML = `<div class="status-bar error">Error: ${err.message}</div>`;
+                alert('Error: ' + err.message);
+                btn.disabled = false;
+                btn.textContent = 'Match';
             }
+        }
+
+        document.getElementById('company-filter').addEventListener('input', e => {
+            enrichSearch = e.target.value.toLowerCase();
+            if (enrichmentData) renderEnrichment();
         });
 
-        document.getElementById('org-search').addEventListener('keydown', e => {
-            if (e.key === 'Enter') document.getElementById('org-search-btn').click();
+        document.querySelectorAll('.enrich-chip').forEach(chip => {
+            chip.addEventListener('click', () => {
+                document.querySelectorAll('.enrich-chip').forEach(c => c.classList.remove('active'));
+                chip.classList.add('active');
+                enrichFilter = chip.dataset.show;
+                if (enrichmentData) renderEnrichment();
+            });
         });
 
         // Mobile sidebar toggle
