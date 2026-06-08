@@ -395,7 +395,7 @@
                     if (!items.includes(m.store)) continue;
                     const color = typeColors[m.store.type] || typeColors['Other'];
                     const addr = [m.store.address, m.store.city].filter(Boolean).join(', ');
-                    html += `<div class="store-row enriched-row">
+                    html += `<div class="store-row enriched-row" data-lat="${m.store.lat}" data-lon="${m.store.lon}" onclick="focusStore({lat:${m.store.lat},lon:${m.store.lon}})">
                         <span class="dot" style="background:${color}"></span>
                         <div class="store-info" style="flex:1">
                             <div class="store-name">${m.store.name}</div>
@@ -417,9 +417,9 @@
                     const addr = [store.address, store.city].filter(Boolean).join(', ');
                     const safeName = store.name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
                     html += `<div class="store-row enriched-row" id="store-${safeName.replace(/\s/g, '_')}">
-                        <span class="dot" style="background:${color}"></span>
+                        <span class="dot" style="background:${color}" onclick="focusStore({lat:${store.lat},lon:${store.lon}})" style="cursor:pointer"></span>
                         <div class="store-info" style="flex:1">
-                            <div class="store-name">${store.name}</div>
+                            <div class="store-name" onclick="focusStore({lat:${store.lat},lon:${store.lon}})" style="cursor:pointer">${store.name}</div>
                             <div class="store-addr">${addr}</div>
                             <div class="match-input" id="input-${safeName.replace(/\s/g, '_')}">
                                 <input type="text" class="search-input match-org-input" placeholder="Org number" style="flex:1;padding:4px 8px;font-size:11px;">
